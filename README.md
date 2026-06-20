@@ -41,9 +41,9 @@ cp cli.js cli.js.bak.$(date +%s) && cp cli.js.work cli.js && rm -f cli.js.work
 
 Takes effect on next launch. See [`SKILL.md`](./SKILL.md) for the full workflow, per-plan picker branches, and how to adapt if upstream changes the registry/menu object shapes.
 
-## Known limitation
+## Availability filtering
 
-Newer versions auto-disable entries an account can't use (the `(disabled)` labels) via availability plumbing that 2.1.112 lacks. Ported entries therefore always show; selecting an unavailable one errors at request time. Cosmetic.
+2.1.112 gates the picker by availability on its own. The assembled list passes through `RM6()`, which — when your account exposes an `availableModels` list — keeps only `Default` plus models that pass the membership check `Kq6()`. So a ported model the account can't use yet (offline, or access not granted) is **hidden automatically**, and appears once it lands in `availableModels` — no re-patching. This differs from 2.1.113+, which grey such entries out as `(disabled)` rather than hiding them. Only accounts with no `availableModels` list see every ported entry unfiltered. Selecting an unavailable model errors at request time, not in the CLI.
 
 ## Files
 

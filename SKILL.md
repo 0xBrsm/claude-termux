@@ -81,9 +81,9 @@ You can only render-test the branch your login falls under. `--print` tests rout
 
 The generator hardcodes a small, stable set tied to 2.1.112 internals: stock anchor strings (the `claude-opus-4-7` analogs), pricing consts (`jB`/`GQ`/`_T1`), the alias resolver `LE()`, the five Opus helpers (`pvK/RvK/V37/IvK/CvK`), and the `cjY` branch shape. These belong to the *frozen 2.1.112*, so they don't change. If a future binary restructures the registry/menu *object shapes* (what we parse out), update the regexes in `extractModels()` only.
 
-## Known limitation
+## Availability filtering (good news, not a limitation)
 
-The newer versions auto-disable entries the account can't use (the `(disabled)` labels) via availability plumbing 2.1.112 lacks. Ported entries therefore **always show**; selecting an unavailable one errors at request time. Acceptable — it's cosmetic.
+2.1.112 gates the picker by availability on its own. `cjY()`'s list passes through `RM6()`, which — when the account exposes an `availableModels` list — keeps only `Default` plus models that pass `Kq6()` (membership in that list). So a ported model the account can't use yet (offline, or access not granted) is **hidden automatically**, and shows up once it lands in `availableModels` — no re-patching. This differs from 2.1.113+, which grey such entries out as `(disabled)` rather than hiding them. Only accounts with no `availableModels` list see every ported entry unfiltered. Either way, selecting an unavailable model errors at request time, not in the CLI.
 
 ## Why not just run the new JS directly
 
