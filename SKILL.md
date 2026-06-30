@@ -2,7 +2,7 @@
 name: patch-cli-model
 description: Sync the locked Termux Claude Code CLI (v2.1.112, last JS build — Termux is stuck here because 2.1.113+ ship Bun-compiled native binaries with no Android target) to a newer version's model menu. Extracts the model registry + picker from any newer native binary and ports it onto a pristine 2.1.112 copy. Use when a new model/version has shipped and the locked CLI's /model picker or --model flag is out of date.
 metadata:
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Patch CLI Model
@@ -21,7 +21,7 @@ Termux can't upgrade past **2.1.112** because 2.1.113+ are Bun-compiled standalo
 
 `sync-from-binary.js` does two things against a pristine stock copy:
 1. **Registry sync** — extracts every model's provider map / 1M flag from the binary (keyed on stable object shapes, not minified symbols), diffs against stock, and clones the `claude-opus-4-7` analog across all routing sites for each new model. Makes `--model <id>` work.
-2. **Menu sync** — keeps 2.1.112's `cjY` branch skeleton, repoints the default-opus alias (`LE()`) to the newest Opus, relabels the five Opus picker helpers, and adds a Fable line if present.
+2. **Menu sync** — keeps 2.1.112's `cjY` branch skeleton but refreshes every place a model name is hardcoded: repoints the default-opus alias (`LE()`) to the newest Opus, relabels the five Opus helpers (`pvK/RvK/V37/IvK/CvK`) and the three Sonnet helpers (`mjY/SvK/bvK`) to the newest Opus/Sonnet, relabels the **static** org-branch entries the helper swaps miss (the `QjY` Sonnet object and the `uT6` "Default (recommended)" description fn), and adds a Fable line to **all** picker branches (Pro `KA`, default, and both `i7` org/Max sub-branches). Model names live in three kinds of sites — helper fns, static entry objects, and description-only fns — so all three are covered.
 
 ## Workflow
 
@@ -79,7 +79,11 @@ You can only render-test the branch your login falls under. `--print` tests rout
 
 ## Adapting if symbol mapping drifts
 
-The generator hardcodes a small, stable set tied to 2.1.112 internals: stock anchor strings (the `claude-opus-4-7` analogs), pricing consts (`jB`/`GQ`/`_T1`), the alias resolver `LE()`, the five Opus helpers (`pvK/RvK/V37/IvK/CvK`), and the `cjY` branch shape. These belong to the *frozen 2.1.112*, so they don't change. If a future binary restructures the registry/menu *object shapes* (what we parse out), update the regexes in `extractModels()` only.
+The generator hardcodes a small, stable set tied to 2.1.112 internals: stock anchor strings (the `claude-opus-4-7` analogs), pricing consts (`jB`/`GQ`/`_T1`), the alias resolver `LE()`, the Opus helpers (`pvK/RvK/V37/IvK/CvK`), the Sonnet helpers (`mjY/SvK/bvK`), the static org-branch entries (`QjY`, `uT6`), and the `cjY` branch shape. These belong to the *frozen 2.1.112*, so they don't change.
+
+Two independent things can drift, on the **source binary** side only:
+- **Registry/object shapes** (what we parse out of the binary). 2.1.197 moved from flat `{firstParty:..}` objects to declarative `{id,family,provider_ids:{first_party,..,gateway},..,supports_1m_beta}` entries plus an explicit id→key map; `extractModels()` already handles that shape. If a future binary restructures it again, update the regexes in `extractModels()` only.
+- **New picker *slots*** in the menu. The skill refreshes the slots 2.1.112 already has. If the newer version adds a brand-new hardcoded model-name site to 2.1.112's skeleton (a new static entry object or description fn, like `QjY`/`uT6` were), add a matching `P.patch(...)` in `syncMenu()`. Symptom: the picker shows a stale model name that none of the existing relabels touch — grep the installed `cli.js` for the stale string in a `label:`/`description:`/`return"…"` context to find the site.
 
 ## Availability filtering (good news, not a limitation)
 

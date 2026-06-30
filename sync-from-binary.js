@@ -12,11 +12,11 @@
 // Defaults: stock = cli.js.bak.1781844410 in the install dir; out = cli.js.work beside it.
 //
 // Covers: registry/routing for every new model (so --model works) + menu promotion of the
-// newest Opus + an optional Fable line. Does NOT reproduce 183's availability "(disabled)"
-// gating — 2.1.112 lacks that plumbing, so ported entries always show.
+// newest Opus AND newest Sonnet (helper relabels + static org-branch entries QjY/uT6) +
+// an optional Fable line in every picker branch. Does NOT reproduce 2.1.183+'s availability
+// "(disabled)" gating — 2.1.112 lacks that plumbing, so ported entries always show.
 
 const fs = require('fs');
-const { execFileSync } = require('child_process');
 
 const INSTALL = '/data/data/com.termux/files/usr/lib/node_modules/@anthropic-ai/claude-code';
 const args = process.argv.slice(2);
@@ -29,7 +29,6 @@ const stockPath = (args[1] && args[1] !== '-o') ? args[1] : `${INSTALL}/cli.js.b
 // ---- family + pricing (stable, family-based — not per-entry) ----
 const PRICING = { opus: 'jB', sonnet: 'GQ', haiku: '_T1', fable: 'jB' };   // 2.1.112 pricing consts
 const FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];                      // skip mythos/internal
-const PROVIDER_KEYS = ['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'mantle'];
 
 // ---- 1. extract model data from the binary (keyed on stable shapes) ----
 function strings(file) {
@@ -63,39 +62,36 @@ function deriveDisplay(id) {
 
 function extractModels(bin) {
   const s = strings(bin);
-  // provider entries
-  const entryRe = /\{firstParty:"(claude-[a-z0-9-]+)",bedrock:("[^"]*"|null),vertex:("[^"]*"|null),foundry:("[^"]*"|null),anthropicAws:("[^"]*"|null),mantle:("[^"]*"|null)/g;
   const models = new Map();
-  let m;
-  while ((m = entryRe.exec(s))) {
-    const id = m[1];
-    const providers = {
-      firstParty: JSON.stringify(id),
-      bedrock: m[2], vertex: m[3], foundry: m[4], anthropicAws: m[5], mantle: m[6],
-    };
-    models.set(id, { id, providers, family: familyOf(id) });
-  }
-  // registry key map: {haiku35:..,opus48:aTr,fable5:MHe..}
+  // id -> registry short key map, e.g. "claude-opus-4-8":"opus48", "claude-fable-5":"fable5"
+  // (2.1.197 ships an explicit map; values are <family><major><minor> with no dashes)
   const keyMap = {};
-  const mapM = s.match(/\{haiku35:[A-Za-z0-9_$]+(?:,[a-z0-9]+:[A-Za-z0-9_$]+)*/);
-  if (mapM) for (const pair of mapM[0].slice(1).split(',')) {
-    const [k, v] = pair.split(':'); if (k && v) keyMap[k] = true;
+  for (const km of s.matchAll(/"(claude-[a-z0-9-]+)":"([a-z]+[0-9]+)"/g)) {
+    if (!(km[1] in keyMap)) keyMap[km[1]] = km[2];
   }
-  // map id -> registry key by matching family+version
-  for (const mdl of models.values()) {
-    const v = mdl.id.replace(/^claude-/, '').replace(/-\d{8}$/, '');
-    let key = v.replace(/(\d+)-(\d+)/, '$1$2').replace(/-/g, '');       // opus-4-8 -> opus48
-    if (/^\d/.test(v)) {                                                // 3-5-haiku -> haiku35
-      const mm = v.match(/^(\d+)-(\d+)-([a-z]+)$/);
-      if (mm) key = `${mm[3]}${mm[1]}${mm[2]}`;
-    }
-    mdl.key = key;
+  // 2.1.197 model objects are declarative:
+  //   {id:"claude-opus-4-8",family:"opus",display_name:..,provider_ids:{first_party:..,
+  //    bedrock:..,vertex:..,foundry:..,anthropic_aws:..,mantle:..,gateway:..},..,supports_1m_beta:!0,..}
+  // Split on object heads, then read each object's bounded chunk. Provider keys are snake_case
+  // and add a `gateway` slot vs. stock 2.1.112 (firstParty/anthropicAws, no gateway) — remap below.
+  const heads = [];
+  const headRe = /\{id:"(claude-[a-z0-9-]+)",family:"([a-z]+)"/g;
+  let h;
+  while ((h = headRe.exec(s))) heads.push({ id: h[1], family: h[2], idx: h.index });
+  for (let i = 0; i < heads.length; i++) {
+    const { id, family, idx } = heads[i];
+    const end = i + 1 < heads.length ? heads[i + 1].idx : idx + 2000;
+    const chunk = s.slice(idx, end);
+    const pm = chunk.match(/provider_ids:\{first_party:("[^"]*"),bedrock:(null|"[^"]*"),vertex:(null|"[^"]*"),foundry:(null|"[^"]*"),anthropic_aws:(null|"[^"]*"),mantle:(null|"[^"]*"),gateway:(?:null|"[^"]*")\}/);
+    if (!pm) continue;
+    const key = keyMap[id];
+    if (!key) continue;                       // no registry key -> not routable, skip (mythos, *-fast)
+    models.set(id, {
+      id, family, key,
+      providers: { firstParty: pm[1], bedrock: pm[2], vertex: pm[3], foundry: pm[4], anthropicAws: pm[5], mantle: pm[6] },
+      ctx1m: /supports_1m_beta:!0/.test(chunk),
+    });
   }
-  // 1M-context capability set
-  const ctx = new Set();
-  const ctxM = s.match(/(?:==="claude-opus-[0-9-]+"(?:\|\|)?)+/g);
-  if (ctxM) for (const blk of ctxM) for (const mm of blk.matchAll(/"(claude-[a-z0-9-]+)"/g)) ctx.add(mm[1]);
-  for (const mdl of models.values()) mdl.ctx1m = ctx.has(mdl.id);
   return models;
 }
 
@@ -175,7 +171,7 @@ function register(P, newModels) {
     `(/^claude-opus-4-7/.test(K)${aws})`, { all: true });
 }
 
-// ---- 4. menu: promote newest opus, add Fable line ----
+// ---- 4. menu: promote newest opus + newest sonnet (helpers + static org entries), add Fable ----
 function syncMenu(P, models) {
   const opus = [...models.values()].filter(m => m.family === 'opus')
     .sort((a, b) => a.key.localeCompare(b.key));
@@ -200,6 +196,37 @@ function syncMenu(P, models) {
   ];
   for (const [o, n] of swaps) P.patch(`relabel ${o.slice(9, 12)}`, o, n);
 
+  // relabel the stock Sonnet picker helpers to the newest Sonnet (mirrors the Opus promotion).
+  // Stock 2.1.112 hardwires "Sonnet 4.6"/sonnet46; bump to whatever the binary's latest sonnet is
+  // so the picker matches the newer version (e.g. shows "Sonnet 5" not "Sonnet 4.6"). The Pro/Max
+  // branches use the generic "sonnet"/"sonnet[1m]" alias as the value, which the backend resolves
+  // to the latest sonnet — so this is a label fix; the non-firstParty branches repoint the key.
+  const sonnet = [...models.values()].filter(m => m.family === 'sonnet')
+    .sort((a, b) => a.key.localeCompare(b.key));
+  const newestS = sonnet[sonnet.length - 1];
+  if (newestS && newestS.key !== 'sonnet46') {
+    const DS = deriveDisplay(newestS.id);               // "Sonnet 5"
+    const sswaps = [
+      [`function mjY(){let q=!KA();return{value:q?ZO().sonnet46:"sonnet",label:"Sonnet",description:\`Sonnet 4.6 · Best for everyday tasks\${q?"":\` · \${Yf(GQ)}\`}\`,descriptionForModel:"Sonnet 4.6 - best for everyday tasks. Generally recommended for most coding tasks"}}`,
+       `function mjY(){let q=!KA();return{value:q?ZO().${newestS.key}:"sonnet",label:"Sonnet",description:\`${DS} · Best for everyday tasks\${q?"":\` · \${Yf(GQ)}\`}\`,descriptionForModel:"${DS} - best for everyday tasks. Generally recommended for most coding tasks"}}`],
+      [`function SvK(){let q=!KA();return{value:q?ZO().sonnet46+"[1m]":"sonnet[1m]",label:"Sonnet (1M context)",description:\`Sonnet 4.6 for long sessions\${q?"":\` · \${Yf(GQ)}\`}\`,descriptionForModel:"Sonnet 4.6 with 1M context window - for long sessions with large codebases"}}`,
+       `function SvK(){let q=!KA();return{value:q?ZO().${newestS.key}+"[1m]":"sonnet[1m]",label:"Sonnet (1M context)",description:\`${DS} for long sessions\${q?"":\` · \${Yf(GQ)}\`}\`,descriptionForModel:"${DS} with 1M context window - for long sessions with large codebases"}}`],
+      [`function bvK(){let q=!KA(),K=i7()?" · Billed as extra usage":"";return{value:"sonnet[1m]",label:"Sonnet (1M context)",description:\`Sonnet 4.6 with 1M context\${K}\${!(K!==""&&!q)?"":\` · \${Yf(GQ)}\`}\`}}`,
+       `function bvK(){let q=!KA(),K=i7()?" · Billed as extra usage":"";return{value:"sonnet[1m]",label:"Sonnet (1M context)",description:\`${DS} with 1M context\${K}\${!(K!==""&&!q)?"":\` · \${Yf(GQ)}\`}\`}}`],
+    ];
+    for (const [o, n] of sswaps) P.patch(`relabel ${o.slice(9, 12)}`, o, n);
+    // QjY is a *static* Sonnet entry object (not a helper fn) used by the org/Max (i7) picker
+    // branch — the helper swaps above miss it, so it would keep showing the stale "Sonnet 4.6".
+    P.patch('relabel QjY',
+      `QjY={value:"sonnet",label:"Sonnet",description:"Sonnet 4.6 · Best for everyday tasks"}`,
+      `QjY={value:"sonnet",label:"Sonnet",description:"${DS} · Best for everyday tasks"}`);
+    // uT6 produces the org branch's "Default (recommended)" description — three hardcoded strings
+    // (newest Opus for Max/Premium, newest Sonnet otherwise). Full-function relabel to the latest.
+    P.patch('relabel uT6',
+      `function uT6(q=!1){if(ch()||Yq6()){if(YX())return"Opus 4.7 with 1M context · Most capable for complex work";return"Opus 4.7 · Most capable for complex work"}return"Sonnet 4.6 · Best for everyday tasks"}`,
+      `function uT6(q=!1){if(ch()||Yq6()){if(YX())return"${D} with 1M context · Best for everyday, complex tasks";return"${D} · Best for everyday, complex tasks"}return"${DS} · Best for everyday tasks"}`);
+  }
+
   // Fable line (if registered): define _fableP() and push it before Haiku in each branch.
   const fable = [...models.values()].find(m => m.family === 'fable');
   if (fable) {
@@ -210,18 +237,27 @@ function syncMenu(P, models) {
     P.patch('fable KA branch', 'return A.push(BvK()),A}', 'return A.push(_fableP()),A.push(BvK()),A}');
     // default branch: before Haiku fallback push
     P.patch('fable default branch', 'else K.push(UjY());return K}', 'else K.push(UjY());K.push(_fableP());return K}');
+    // org/Max (i7) branches end with the static Haiku entry (xvK); the ch()||Yq6() sub-branch uses
+    // accumulator O, the other i7 sub-branch uses A. Insert Fable just before Haiku in each.
+    P.patch('fable i7 max branch', 'return O.push(xvK),O}', 'return O.push(_fableP()),O.push(xvK),O}');
+    P.patch('fable i7 sub branch', 'return A.push(xvK),A}', 'return A.push(_fableP()),A.push(xvK),A}');
   }
 }
 
 // ---- main ----
 const models = extractModels(binPath);
 let stock = fs.readFileSync(stockPath, 'utf8');
-const present = new Set();
-for (const m of models.values()) if (stock.includes(`firstParty:"${m.id}"`)) present.add(m.id);
+// A model is already known if stock's qA registry already carries its short key. Key-based,
+// not id-based: the binary uses undated ids (claude-haiku-4-5) where stock uses dated ones
+// (claude-haiku-4-5-20251001), so id matching would re-register existing models and produce
+// duplicate registry keys. Keys (haiku45, opus47, ...) are the stable identity across both.
+const qaM = stock.match(/qA=\{[^}]*\}/);
+const stockKeys = new Set();
+if (qaM) for (const km of qaM[0].matchAll(/([a-z0-9]+):/g)) stockKeys.add(km[1]);
 const newModels = [...models.values()]
-  .filter(m => FAMILIES.includes(m.family) && !present.has(m.id));
+  .filter(m => FAMILIES.includes(m.family) && !stockKeys.has(m.key));
 
-console.log(`binary models: ${models.size} | already in stock: ${present.size} | new: ${newModels.length}`);
+console.log(`binary models: ${models.size} | already in stock: ${stockKeys.size} | new: ${newModels.length}`);
 console.log('new:', newModels.map(m => `${m.id}(${m.key}${m.ctx1m ? ',1m' : ''})`).join(', ') || '(none)');
 
 const P = makePatcher(stock);
