@@ -180,6 +180,12 @@ function syncMenu(P, models) {
   P.patch('LE alias',
     'if(!KA())return ZO()[vQ];return ZO().opus47}',
     `if(!KA())return ZO()[vQ];return ZO().${newest.key}}`);
+  // JK8() is the "assumed default model" fallback (q??JK8(), hE(JK8())) used when no model is
+  // resolvable — stock hardwires it to the-then-newest Opus. It's not a picker row, but leaving it
+  // stale means estimation/hint paths report the old flagship. Repoint it alongside LE().
+  P.patch('JK8 assumed-default',
+    'function JK8(){return ZO().opus47}',
+    `function JK8(){return ZO().${newest.key}}`);
   // relabel the 5 stock Opus picker helpers to newest (full-def swaps)
   const D = deriveDisplay(newest.id);                   // "Opus 4.8"
   const swaps = [
