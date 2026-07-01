@@ -228,11 +228,16 @@ function syncMenu(P, models) {
   }
 
   // Fable line (if registered): define _fableP() and push it before Haiku in each branch.
+  // value is ALWAYS the plain string id — never q?ZO().fableKey:... . The picker keys rows by
+  // String(value) (key:String(N8.value), value-keyed optionMap), so a row value must be a string;
+  // a raw provider object (ZO().fableKey) would stringify to "[object Object]". That object form
+  // only arose on non-KA org/Max (i7) accounts; the string id is correct on all account types and
+  // routes fine (the normalizer resolves it), matching how the other org-branch rows use a string.
   const fable = [...models.values()].find(m => m.family === 'fable');
   if (fable) {
     P.patch('fable helper',
       'function RvK(){',
-      `function _fableP(){let q=!KA();return{value:q?ZO().${fable.key}:"${fable.id}",label:"Fable",description:\`Fable · Most capable for hardest, longest tasks\${q?"":\` · \${Yf(jB)}\`}\`,descriptionForModel:"Fable - most capable for your hardest and longest-running tasks"}}function RvK(){`);
+      `function _fableP(){let q=!KA();return{value:"${fable.id}",label:"Fable",description:\`Fable · Most capable for hardest, longest tasks\${q?"":\` · \${Yf(jB)}\`}\`,descriptionForModel:"Fable - most capable for your hardest and longest-running tasks"}}function RvK(){`);
     // consumer (KA) branch: before Haiku BvK
     P.patch('fable KA branch', 'return A.push(BvK()),A}', 'return A.push(_fableP()),A.push(BvK()),A}');
     // default branch: before Haiku fallback push
