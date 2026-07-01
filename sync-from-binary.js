@@ -215,6 +215,13 @@ function syncMenu(P, models) {
        `function bvK(){let q=!KA(),K=i7()?" · Billed as extra usage":"";return{value:"sonnet[1m]",label:"Sonnet (1M context)",description:\`${DS} with 1M context\${K}\${!(K!==""&&!q)?"":\` · \${Yf(GQ)}\`}\`}}`],
     ];
     for (const [o, n] of sswaps) P.patch(`relabel ${o.slice(9, 12)}`, o, n);
+    // repoint the default-sonnet alias resolver Af() -> newest (the sonnet twin of the LE() opus
+    // repoint). Af() is what hv() returns for non-Max firstParty accounts, so the "Default
+    // (recommended)" entry resolves through it. Without this the picker LABELS say the new Sonnet
+    // (via uT6/QjY/mjY) but selecting Default still gives sonnet46 underneath.
+    P.patch('Af alias',
+      'if(!KA())return ZO()[TQ];return ZO().sonnet46}',
+      `if(!KA())return ZO()[TQ];return ZO().${newestS.key}}`);
     // QjY is a *static* Sonnet entry object (not a helper fn) used by the org/Max (i7) picker
     // branch — the helper swaps above miss it, so it would keep showing the stale "Sonnet 4.6".
     P.patch('relabel QjY',
