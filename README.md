@@ -1,23 +1,59 @@
 # claude-termux
 
-Run **current** Claude Code natively on Termux (aarch64, Android's Bionic libc).
+Unpack current Claude Code and run it on Termux (aarch64, Android's Bionic libc) under stock
+`bun`. **Non-interactive only — the interactive TUI does not work.** See
+[Status](#status-what-works-and-what-doesnt) before using this.
 
-## The problem, and why it turned out not to be one
+## The problem
 
 From v2.1.113 onward, `@anthropic-ai/claude-code` ships as **Bun-compiled standalone binaries**
 (glibc/musl, x64/arm64). There is no `linux-arm64-android` target, so those binaries don't run on
 Termux, and the usual conclusion is that Termux is pinned to v2.1.112 — the last pure-JS release.
 
-It isn't. Two things settle it:
+Two things get you most of the way past that:
 
 1. Termux packages a **native `bun`** (`pkg install bun`, aarch64-android).
 2. The Bun standalone payload stores **full source text for every module**. The embedded
    JavaScriptCore bytecode is only a startup optimization that Bun skips when absent — so there is
    no cross-architecture bytecode problem to solve.
 
-So the current release can simply be unpacked and run: extract the module graph, repoint its
-absolute `/$bunfs/root/` paths at a real directory, and hand the entry point to Termux's `bun`.
-Verified on 2.1.293 and 2.1.295 — `--version`, live API requests, and tool use all work.
+So the payload can be unpacked and run: extract the module graph, repoint its absolute
+`/$bunfs/root/` paths at a real directory, and hand the entry point to Termux's `bun`.
+
+## Status: what works and what doesn't
+
+Tested on 2.1.293 and 2.1.295 under Termux's `bun` 1.4.2:
+
+| | |
+|---|---|
+| `--version`, `--help`, subcommands | works |
+| `-p` / `--print`, live API requests | works |
+| tool use (Bash, file edits) | works |
+| **interactive TUI** | **does not start** |
+
+The TUI is the real blocker, and unpacking cannot fix it. Claude Code's renderer calls
+`Bun.ant.CellSegmenter` — a native API in **Anthropic's private Bun fork**
+(`@anthropic-ai/bun-internal`), not in stock Bun:
+
+```
+Error: This runtime has no Bun.ant.CellSegmenter.
+Run Claude Code on the @anthropic-ai/bun-internal version pinned in package.json.
+```
+
+It throws on every render, so nothing ever paints and the process sits idle until killed. There is
+no fallback renderer and no env flag to select one — `CLAUDE_CODE_LEGACY_BUNDLE` is about git
+bundle uploads and `CLAUDE_CODE_TUI_TRIAL` is a fullscreen upsell latch, neither is a renderer
+switch. Five `Bun.ant` APIs are referenced in total (`CellSegmenter`, `memoryPressureLevel`,
+`getPeerUid`, `getPeerPid`, `setDumpable`); only `CellSegmenter` blocks startup.
+
+`CellSegmenter` is not a thin shim: it shapes text directly into a packed terminal cell grid
+(`Int32Array`/`BigInt64Array` screen buffers, width masks, wide-char spacer head/tail, char-pool
+indices). A JS polyfill is conceivable via `Intl.Segmenter` plus an East-Asian-width table, but it
+means reimplementing a native hot path from its observed surface, and any mismatch shows up as
+corrupted rendering.
+
+So: useful for scripting and `-p` pipelines on Termux, not a replacement for an interactive
+client.
 
 ## Install
 
@@ -69,6 +105,9 @@ Reference: Bun's `src/standalone_graph/StandaloneModuleGraph.rs`.
   used.
 - The unpacked tree shares `~/.claude` with any other install. If a newer release migrates state,
   an older fallback may not survive it.
+- Untested: whether some version between 2.1.113 and 2.1.293 predates the `Bun.ant` renderer and
+  would therefore have a working TUI on stock Bun. 2.1.113 was the first Bun-compiled release; the
+  native cell renderer landed at some unknown point after it.
 
 ## Why not patch the frozen 2.1.112 build instead
 
