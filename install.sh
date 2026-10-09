@@ -1,55 +1,53 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Build a natively-runnable Claude Code for Termux from an upstream Bun standalone binary.
+# Install current Claude Code on Termux, running under Termux's native bun.
 #
-# 2.1.113+ ship only as Bun --compile executables with no linux-arm64-android target, but the
+# Releases ship only as Bun --compile executables with no linux-arm64-android target, but the
 # embedded module graph carries full source text for every module (bytecode is an optimization
-# Bun skips when absent). So: unpack the graph, repoint its absolute /$bunfs/root/ paths at the
-# install dir, and run it with Termux's native `bun`.
+# Bun skips when absent). So: unpack the graph, patch it (see patch.js), and run it with `bun`.
+#
+# Usage: ./install.sh [version]          default: latest
+#        BINARY=path/to/claude ./install.sh <version>   reuse a downloaded binary (~250 MB)
 set -euo pipefail
 
-VERSION="${1:-}"
-PREFIX="$HOME/.local/share/claude-code-bun"
-BINDIR="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}/bin"
-BIN="$BINDIR/claude-bun"
-REPL="$BINDIR/claude-repl"
+PKG="@anthropic-ai/claude-code-linux-x64"
+ROOT="$HOME/.local/share/claude-code-bun"
+BIN="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}/bin/claude"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-[ -n "$VERSION" ] || VERSION="$(npm view @anthropic-ai/claude-code-linux-x64 version)"
-DEST="$PREFIX/$VERSION"
-echo "==> version $VERSION -> $DEST"
+VERSION="${1:-$(curl -fsSL "https://registry.npmjs.org/$PKG/latest" | bun -e 'console.log(JSON.parse(await Bun.stdin.text()).version)')}"
+DEST="$ROOT/$VERSION"
+echo "==> Claude Code $VERSION -> $DEST"
 
-# BINARY=<path> reuses an already-downloaded `package/claude` (the tarball is ~250 MB).
 if [ -n "${BINARY:-}" ]; then
-  mkdir -p "$WORK/package" && cp "$BINARY" "$WORK/package/claude"
+  cp "$BINARY" "$WORK/claude"
 else
-  curl -fsSL "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${VERSION}.tgz" \
-    -o "$WORK/native.tgz"
-  tar xzf "$WORK/native.tgz" -C "$WORK"
+  curl -fsSL "https://registry.npmjs.org/$PKG/-/${PKG#*/}-$VERSION.tgz" | tar xz -C "$WORK" package/claude
+  mv "$WORK/package/claude" "$WORK/claude"
 fi
 
+# Build beside the target and swap it in only once patching succeeds.
+STAGE="$ROOT/.staging"
+rm -rf "$STAGE"
+bun "$HERE/extract.js" "$WORK/claude" "$STAGE"
+bun "$HERE/patch.js" "$STAGE" "$DEST"
 rm -rf "$DEST"
-mkdir -p "$DEST"
-node "$HERE/bunx.js" "$WORK/package/claude" "$DEST"
-node "$HERE/rewrite.js" "$DEST"
-cp "$DEST/cli" "$DEST/cli.mjs"
+mv "$STAGE" "$DEST"
 
-mkdir -p "$(dirname "$BIN")"
+# rm first: an npm-installed `claude` is a symlink into node_modules, and writing through it
+# would clobber that package's cli.js.
+rm -f "$BIN"
 cat > "$BIN" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 exec bun "$DEST/cli.mjs" "\$@"
 EOF
 chmod +x "$BIN"
-
-# Interactive front-end: the real TUI can't run on stock Bun, so drive the stream-json
-# session mode instead.
-cp "$HERE/claude-repl.js" "$DEST/claude-repl.js"
-cat > "$REPL" <<EOF
-#!/data/data/com.termux/files/usr/bin/bash
-exec node "$DEST/claude-repl.js" "\$@"
-EOF
-chmod +x "$REPL"
-
-echo "==> installed: $BIN, $REPL"
 "$BIN" --version
+
+# The new version starts, so the wrapper no longer needs any other version.
+for old in "$ROOT"/*/; do
+  old="${old%/}"
+  [ "$old" = "$DEST" ] || { echo "==> removing $old"; rm -rf "$old"; }
+done
+echo "==> installed $BIN"

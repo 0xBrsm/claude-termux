@@ -1,8 +1,5 @@
 *.tgz
 package/
-out/
-v295/
-claude295
 
 # Upstream Bun source, kept locally as format reference only.
 smg*.rs
