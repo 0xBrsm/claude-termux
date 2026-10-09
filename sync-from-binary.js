@@ -20,6 +20,12 @@ const fs = require('fs');
 
 const INSTALL = '/data/data/com.termux/files/usr/lib/node_modules/@anthropic-ai/claude-code';
 const args = process.argv.slice(2);
+const excludeIdx = args.findIndex(a => a.startsWith('--exclude='));
+let excludeIds = [];
+if (excludeIdx >= 0) {
+  excludeIds = args[excludeIdx].slice('--exclude='.length).split(',').map(s => s.trim()).filter(Boolean);
+  args.splice(excludeIdx, 1);
+}
 const binPath = args[0];
 if (!binPath) { console.error('usage: node sync-from-binary.js <native-binary> [stock-cli.js] [-o out.js]'); process.exit(1); }
 const oIdx = args.indexOf('-o');
@@ -66,7 +72,13 @@ function extractModels(bin) {
   // id -> registry short key map, e.g. "claude-opus-4-8":"opus48", "claude-fable-5":"fable5"
   // (2.1.197 ships an explicit map; values are <family><major><minor> with no dashes)
   const keyMap = {};
-  for (const km of s.matchAll(/"(claude-[a-z0-9-]+)":"([a-z]+[0-9]+)"/g)) {
+  // Scope to the AUTHORITATIVE id->key map only. Other small maps reuse the same
+  // "claude-x":"key" shape (e.g. a reasoning-mode map TqS={"claude-opus-4-8":"hc10",..}),
+  // so a global scan would mis-key models by first-occurrence. Anchor on the stable
+  // "claude-opus-4-7":"opus47" pair, which lives only in the real map, and parse its object.
+  const mapM = s.match(/\{[^{}]*"claude-opus-4-7":"opus47"[^{}]*\}/);
+  const mapSrc = mapM ? mapM[0] : s;
+  for (const km of mapSrc.matchAll(/"(claude-[a-z0-9-]+)":"([a-z]+[0-9]+)"/g)) {
     if (!(km[1] in keyMap)) keyMap[km[1]] = km[2];
   }
   // 2.1.197 model objects are declarative:
@@ -82,15 +94,25 @@ function extractModels(bin) {
     const { id, family, idx } = heads[i];
     const end = i + 1 < heads.length ? heads[i + 1].idx : idx + 2000;
     const chunk = s.slice(idx, end);
-    const pm = chunk.match(/provider_ids:\{first_party:("[^"]*"),bedrock:(null|"[^"]*"),vertex:(null|"[^"]*"),foundry:(null|"[^"]*"),anthropic_aws:(null|"[^"]*"),mantle:(null|"[^"]*"),gateway:(?:null|"[^"]*")\}/);
-    if (!pm) continue;
+    // `anthropic_google_cloud` and `gateway` are both OPTIONAL — not every entry carries them
+    // (claude-haiku-5-5 in 2.1.293 has no `gateway` slot). Requiring either one silently drops
+    // the model, which is how Haiku 5.5 went missing for a whole sync. Keep trailing slots lazy.
+    const pm = chunk.match(/provider_ids:\{first_party:("[^"]*"),bedrock:(null|"[^"]*"),vertex:(null|"[^"]*"),foundry:(null|"[^"]*"),anthropic_aws:(null|"[^"]*"),(?:anthropic_google_cloud:(?:null|"[^"]*"),)?mantle:(null|"[^"]*")(?:,gateway:(?:null|"[^"]*"))?\}/);
     const key = keyMap[id];
     if (!key) continue;                       // no registry key -> not routable, skip (mythos, *-fast)
+    // In the authoritative key map but unparseable => provider_ids shape drifted. Never skip
+    // this quietly; a dropped model looks identical to one the binary doesn't ship.
+    if (!pm) continue;                        // reported below via the keyMap diff
     models.set(id, {
       id, family, key,
       providers: { firstParty: pm[1], bedrock: pm[2], vertex: pm[3], foundry: pm[4], anthropicAws: pm[5], mantle: pm[6] },
       ctx1m: /supports_1m_beta:!0/.test(chunk),
     });
+  }
+  const missing = Object.keys(keyMap).filter(id => !models.has(id));
+  if (missing.length) {
+    console.error(`WARN unparsed (in key map, provider_ids shape drifted): ${missing.join(', ')}`);
+    console.error('     -> fix the provider_ids regex in extractModels(); these models are NOT ported.');
   }
   return models;
 }
@@ -138,11 +160,26 @@ function register(P, newModels) {
   P.patch('S4 display name',
     'case"claude-opus-4-7":return"Opus 4.7"+K',
     `case"claude-opus-4-7":return"Opus 4.7"+K;${disp.replace(/;$/, '')}`);
-  // S5 1M capability (opus + supports-1m only)
-  const ctxIds = newModels.filter(m => m.ctx1m).map(m => `||K==="${m.id}"`).join('');
-  if (ctxIds) P.patch('S5 1M context',
+  // S5 Aw6 (Opus-tier predicate: NOT 1M-related despite the old comment here — it gates the
+  // "Opus unavailable on Pro plan" error, 529 opus-fallback, and an Opus-only kill-switch
+  // feature flag. Mislabeling this cost a real bug once: a prior sync appended a new Sonnet and
+  // a new Fable model here because they happened to have ctx1m set, which meant an Opus-only
+  // kill-switch could silently block Sonnet/Fable queries too. Only ever append OPUS models.
+  const opusIds = newModels.filter(m => m.family === 'opus').map(m => `||K==="${m.id}"`).join('');
+  if (opusIds) P.patch('S5 Aw6 opus-tier predicate',
     'K==="claude-opus-4-5"||K==="claude-opus-4-6"||K==="claude-opus-4-7"',
-    `K==="claude-opus-4-5"||K==="claude-opus-4-6"||K==="claude-opus-4-7"${ctxIds}`);
+    `K==="claude-opus-4-5"||K==="claude-opus-4-6"||K==="claude-opus-4-7"${opusIds}`);
+  // S5b vo() — the REAL local 1M-context-window gate (feeds ff()/Jn(), which computes the
+  // auto-compact window). Independent of the picker's "(1M context)" row and of DP()'s "[1m]"
+  // literal-suffix check: vo() is the fallback path used when the 1M beta is active but the
+  // model string on hand doesn't carry an explicit "[1m]" suffix. It's a hardcoded per-family
+  // allowlist; a model missing here gets silently treated as a 200K-context model and
+  // auto-compacts far earlier than 1M would suggest. Append every new ctx1m-capable model here
+  // (any family), matching vo()'s "K.includes(bare-id-without-claude-prefix)" style.
+  const vo1mIds = newModels.filter(m => m.ctx1m).map(m => `||K.includes("${m.id.replace(/^claude-/, '')}")`).join('');
+  if (vo1mIds) P.patch('S5b vo 1M-eligible families',
+    'K.includes("claude-sonnet-4")||K.includes("opus-4-6")||K.includes("opus-4-7")',
+    `K.includes("claude-sonnet-4")||K.includes("opus-4-6")||K.includes("opus-4-7")${vo1mIds}`);
   // S6 max tokens (clone opus 64000/128000)
   const tok = newModels.map(m => {
     const sub = m.id.replace(/^claude-/, '').replace(/-\d{8}$/, '');
@@ -238,8 +275,46 @@ function syncMenu(P, models) {
     P.patch('relabel uT6',
       `function uT6(q=!1){if(ch()||Yq6()){if(YX())return"Opus 4.7 with 1M context · Most capable for complex work";return"Opus 4.7 · Most capable for complex work"}return"Sonnet 4.6 · Best for everyday tasks"}`,
       `function uT6(q=!1){if(ch()||Yq6()){if(YX())return"${D} with 1M context · Best for everyday, complex tasks";return"${D} · Best for everyday, complex tasks"}return"${DS} · Best for everyday tasks"}`);
+    // xW() is a SEPARATE "marketing name" lookup (system-prompt "You are powered by the model
+    // named X" text + env-var upgrade-suggestion labels) — not a picker helper, so it's easy to
+    // forget. It's keyed by substring match against hardcoded stock ids and gets no entry for
+    // ported models automatically; a stale copy falls through to `undefined`, so the raw model
+    // id gets shown to the user instead of a friendly name (and the "(1M context)" suffix never
+    // appears in that surface either). Prepend a branch for the newest Sonnet.
+    P.patch('xW marketing name (sonnet)',
+      'if(_.includes("claude-sonnet-4-6"))return K?"Sonnet 4.6 (1M context)":"Sonnet 4.6";',
+      `if(_.includes("${newestS.id}"))return K?"${DS} (1M context)":"${DS}";if(_.includes("claude-sonnet-4-6"))return K?"Sonnet 4.6 (1M context)":"Sonnet 4.6";`);
   }
+  // xW() opus branch (see comment above) — prepend a branch for the newest Opus.
+  P.patch('xW marketing name (opus)',
+    'if(_.includes("claude-opus-4-7"))return K?"Opus 4.7 (1M context)":"Opus 4.7";',
+    `if(_.includes("${newest.id}"))return K?"${D} (1M context)":"${D}";if(_.includes("claude-opus-4-7"))return K?"Opus 4.7 (1M context)":"Opus 4.7";`);
 
+  // Haiku promotion. Unlike Opus/Sonnet this is NOT cosmetic: VQ is the alias key xT6() reads,
+  // and Haiku is Claude Code's background model (summarization, title generation), so moving it
+  // changes what runs those. UjY() compares xT6() against the same key — move both together or
+  // the picker silently falls through to gjY() and the Haiku row disappears.
+  const haiku = [...models.values()].filter(m => m.family === 'haiku')
+    .sort((a, b) => a.key.localeCompare(b.key));
+  const newestH = haiku[haiku.length - 1];
+  if (newestH && newestH.key !== 'haiku45') {
+    const DH = deriveDisplay(newestH.id);
+    const sonnetTxt = newestS ? deriveDisplay(newestS.id) : 'Sonnet 4.6';
+    P.patch('VQ haiku alias key', 'VQ="haiku45"', `VQ="${newestH.key}"`);
+    P.patch('UjY haiku branch check',
+      'function UjY(){return xT6()===ZO().haiku45?BvK():gjY()}',
+      `function UjY(){return xT6()===ZO().${newestH.key}?BvK():gjY()}`);
+    P.patch('relabel BvK', 'description:`Haiku 4.5 · Fastest', `description:\`${DH} · Fastest`);
+    P.patch('relabel xvK',
+      'description:"Haiku 4.5 · Fastest for quick answers"',
+      `description:"${DH} · Fastest for quick answers"`);
+    P.patch('BvK descriptionForModel',
+      'descriptionForModel:"Haiku 4.5 - fastest for quick answers. Lower cost but less capable than Sonnet 4.6."',
+      `descriptionForModel:"${DH} - fastest for quick answers. Lower cost but less capable than ${sonnetTxt}."`);
+    P.patch('xW marketing name (haiku)',
+      'if(_.includes("claude-haiku-4-5"))return"Haiku 4.5";',
+      `if(_.includes("${newestH.id}"))return"${DH}";if(_.includes("claude-haiku-4-5"))return"Haiku 4.5";`);
+  }
   // Fable line (if registered): define _fableP() and push it before Haiku in each branch.
   // value is ALWAYS the plain string id — never q?ZO().fableKey:... . The picker keys rows by
   // String(value) (key:String(N8.value), value-keyed optionMap), so a row value must be a string;
@@ -251,6 +326,12 @@ function syncMenu(P, models) {
     P.patch('fable helper',
       'function RvK(){',
       `function _fableP(){let q=!KA();return{value:"${fable.id}",label:"Fable",description:\`Fable · Most capable for hardest, longest tasks\${q?"":\` · \${Yf(jB)}\`}\`,descriptionForModel:"Fable - most capable for your hardest and longest-running tasks"}}function RvK(){`);
+    // xW() fable branch (see comment above the sonnet/opus xW patches). Fable has no [1m]
+    // variant in the picker, so no K-based "(1M context)" suffix here, matching the plain
+    // (non-suffixed) style of the other non-1M-capable branches like Haiku's.
+    P.patch('xW marketing name (fable)',
+      'if(_.includes("claude-haiku-4-5"))return"Haiku 4.5";',
+      `if(_.includes("${fable.id}"))return"${deriveDisplay(fable.id)}";if(_.includes("claude-haiku-4-5"))return"Haiku 4.5";`);
     // consumer (KA) branch: before Haiku BvK
     P.patch('fable KA branch', 'return A.push(BvK()),A}', 'return A.push(_fableP()),A.push(BvK()),A}');
     // default branch: before Haiku fallback push
@@ -264,6 +345,8 @@ function syncMenu(P, models) {
 
 // ---- main ----
 const models = extractModels(binPath);
+for (const id of excludeIds) models.delete(id);
+if (excludeIds.length) console.log('excluded:', excludeIds.join(', '));
 let stock = fs.readFileSync(stockPath, 'utf8');
 // A model is already known if stock's qA registry already carries its short key. Key-based,
 // not id-based: the binary uses undated ids (claude-haiku-4-5) where stock uses dated ones
