@@ -6,13 +6,11 @@ Run **current** Claude Code natively on Termux (aarch64, Android's Bionic libc).
 
 From v2.1.113 onward, `@anthropic-ai/claude-code` ships as **Bun-compiled standalone binaries**
 (glibc/musl, x64/arm64). There is no `linux-arm64-android` target, so those binaries don't run on
-Termux. For a long time the only native option was to stay on **v2.1.112** — the last pure-JS
-release — and patch newer models into its frozen model menu. That's the `sync-from-binary.js`
-route, still in this repo and described below.
+Termux, and the usual conclusion is that Termux is pinned to v2.1.112 — the last pure-JS release.
 
-It's no longer necessary. Two things changed the picture:
+It isn't. Two things settle it:
 
-1. Termux now packages a **native `bun`** (`pkg install bun`, aarch64-android).
+1. Termux packages a **native `bun`** (`pkg install bun`, aarch64-android).
 2. The Bun standalone payload stores **full source text for every module**. The embedded
    JavaScriptCore bytecode is only a startup optimization that Bun skips when absent — so there is
    no cross-architecture bytecode problem to solve.
@@ -30,7 +28,7 @@ pkg install bun nodejs
 ```
 
 Installs a tree under `~/.local/share/claude-code-bun/<version>/` and a `claude-bun` wrapper in
-`$TERMUX_PREFIX/bin`. An existing npm-installed `claude` is left alone, so you keep a fallback.
+`$TERMUX_PREFIX/bin`. An existing npm-installed `claude` is left alone.
 
 The tarball is ~250 MB. To build from one you already have:
 
@@ -72,49 +70,28 @@ Reference: Bun's `src/standalone_graph/StandaloneModuleGraph.rs`.
 - The unpacked tree shares `~/.claude` with any other install. If a newer release migrates state,
   an older fallback may not survive it.
 
-## Legacy: patching the frozen 2.1.112 build
+## Why not patch the frozen 2.1.112 build instead
 
-Superseded by the above, kept because it still works and needs no `bun`.
+That was this repo's original approach — port newer models into 2.1.112's hardcoded registry and
+`/model` picker. It worked, and it's a dead end. Removed in `c16e611`; recoverable from history.
 
-v2.1.112's model registry, normalizer, display switch, and `/model` picker hardcode the models that
-existed at the time, so every newer model silently falls back to Opus 4. Since 2.1.112 is a **fixed
-target** — its registration sites and picker skeleton never change — the templates are written once
-and only the *source binary* varies. `sync-from-binary.js` extracts model **data** from any newer
-native binary and ports it onto a pristine 2.1.112 copy:
+The API refuses newer models for an old client with HTTP 400 `claude_code_version_too_old`, and
+**that gate cannot be defeated client-side.** The version is resolved from the OAuth session, not
+from anything the client sends. Measured: with both user-agent builders patched and the outbound
+request sniffed via `ANTHROPIC_BASE_URL`, the UA was verifiably `claude-cli/2.1.293` while the
+server still answered *"Claude Code 2.1.112 does not support this model"*. No `x-*` header carries
+a CLI version, and the `anthropic-beta` sets of 2.1.112 and 2.1.293 are identical.
 
-1. **Registry sync** — reads every model's provider map / 1M flag from the binary (keyed on stable
-   object shapes, not minified symbols), diffs against stock, and clones the `claude-opus-4-7`
-   analog across all routing sites for each new model. Makes `--model <id>` work.
-2. **Menu sync** — keeps 2.1.112's picker branch skeleton, repoints the default aliases to the
-   newest Opus/Sonnet/Haiku, relabels the picker entries, and adds a Fable line when present.
-
-```bash
-node sync-from-binary.js path/to/package/claude   # writes cli.js.work next to the install
-```
-
-Note that this route is subject to a server-side `claude_code_version_too_old` gate: a model newer
-than some minimum client version is refused no matter what the local CLI claims, and spoofing the
-client version string does not defeat it (measured — the gate does not read it from the request).
-Running the real current version, as above, sidesteps the gate entirely.
-
-See [`SKILL.md`](./SKILL.md) for the full workflow, per-plan picker branches, and how to adapt if
-upstream changes the registry/menu object shapes.
-
-### Availability filtering
-
-2.1.112 gates the picker by availability on its own. The assembled list passes through `RM6()`,
-which — when your account exposes an `availableModels` list — keeps only `Default` plus models that
-pass the membership check `Kq6()`. So a ported model the account can't use yet is **hidden
-automatically**, and appears once it lands in `availableModels`. This differs from 2.1.113+, which
-greys such entries out as `(disabled)` rather than hiding them.
+The gate also advances per model — `claude-opus-5-5` required 2.1.280 — so the set of models a
+patched 2.1.112 can reach only shrinks. And it's substantive rather than cosmetic: 2.1.293 has
+~279 `effort:` sites to 2.1.112's 34, so even with the gate lifted that build probably couldn't
+drive a model whose entry defaults to an effort level.
 
 ## Files
 
 - `bunx.js` — Bun standalone-graph parser and extractor
 - `rewrite.js` — repoints embedded `$bunfs` paths at a real directory
 - `install.sh` — download, unpack, rewrite, install the `claude-bun` wrapper
-- `sync-from-binary.js` — legacy 2.1.112 model-menu generator
-- `SKILL.md` — Claude Code skill manifest + full reference for the legacy route
 
-> Unpacks and patches local copies of Anthropic's Claude Code for personal use on an
-> otherwise-unsupported platform. Not affiliated with Anthropic.
+> Unpacks a local copy of Anthropic's Claude Code for personal use on an otherwise-unsupported
+> platform. Not affiliated with Anthropic.
