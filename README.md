@@ -1,8 +1,8 @@
 # claude-termux
 
 Unpack current Claude Code and run it on Termux (aarch64, Android's Bionic libc) under stock
-`bun`. **Non-interactive only — the interactive TUI does not work.** See
-[Status](#status-what-works-and-what-doesnt) before using this.
+`bun`. The upstream TUI cannot run here, so `claude-repl` provides an interactive client over the
+CLI's own stream-json session mode. See [Status](#status-what-works-and-what-doesnt) first.
 
 ## The problem
 
@@ -29,9 +29,14 @@ Tested on 2.1.293 and 2.1.295 under Termux's `bun` 1.4.2:
 | `--version`, `--help`, subcommands | works |
 | `-p` / `--print`, live API requests | works |
 | tool use (Bash, file edits) | works |
-| **interactive TUI** | **does not start** |
+| multi-turn conversation, streaming, Ctrl-C | works, via `claude-repl` |
+| **upstream interactive TUI** | **does not start** |
 
-The TUI is the real blocker, and unpacking cannot fix it. Claude Code's renderer calls
+Current models work: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and the
+`opus`/`sonnet`/`haiku` aliases all respond, which is the whole point — the server-side
+`claude_code_version_too_old` gate is what the frozen 2.1.112 build can never get past.
+
+The upstream TUI, though, cannot be fixed by unpacking. Claude Code's renderer calls
 `Bun.ant.CellSegmenter` — a native API in **Anthropic's private Bun fork**
 (`@anthropic-ai/bun-internal`), not in stock Bun:
 
@@ -52,8 +57,37 @@ indices). A JS polyfill is conceivable via `Intl.Segmenter` plus an East-Asian-w
 means reimplementing a native hot path from its observed surface, and any mismatch shows up as
 corrupted rendering.
 
-So: useful for scripting and `-p` pipelines on Termux, not a replacement for an interactive
-client.
+Waiting for an older release doesn't help either: 2.1.280 — the oldest version the Opus 5.5
+server gate accepts — already contains the `CellSegmenter` guard, so no version can be both
+new enough for the 5.5 models and old enough to predate the native renderer.
+
+## The interactive path: `claude-repl`
+
+The renderer is the only thing that needs the private fork. The conversation engine doesn't, and
+the CLI exposes it directly:
+
+```sh
+claude --print --verbose --input-format stream-json --output-format stream-json
+```
+
+That is a persistent multi-turn session — not one shot per process — speaking newline-delimited
+JSON in both directions, with no renderer anywhere in the path. `claude-repl.js` is a ~90-line
+client over it: readline prompt, token-by-token streaming via `--include-partial-messages`, tool
+calls and results shown as they happen, type-ahead queued while a turn runs, and Ctrl-C mapped to
+the session's `interrupt` control request (the turn aborts, the session survives).
+
+```sh
+claude-repl                                   # defaults
+claude-repl --model claude-opus-5-5           # extra flags pass through to the CLI
+claude-repl --permission-mode acceptEdits
+```
+
+Two notes on Ctrl-C: readline swallows it on a TTY and emits its own event, so the client listens
+on both `rl` and `process`; and at an idle prompt it exits rather than interrupting. Slash
+commands are the CLI's, not the TUI's — `/exit` and `/quit` are handled locally.
+
+What's missing relative to the real TUI is the TUI: no scrollback pane, no diff viewer, no
+interactive permission prompts (pick a `--permission-mode` up front), no `/`-menu.
 
 ## Install
 
@@ -63,8 +97,9 @@ pkg install bun nodejs
 ./install.sh 2.1.295    # a specific one
 ```
 
-Installs a tree under `~/.local/share/claude-code-bun/<version>/` and a `claude-bun` wrapper in
-`$TERMUX_PREFIX/bin`. An existing npm-installed `claude` is left alone.
+Installs a tree under `~/.local/share/claude-code-bun/<version>/` plus two wrappers in
+`$TERMUX_PREFIX/bin`: `claude-bun` (the CLI) and `claude-repl` (the interactive client). An
+existing npm-installed `claude` is left alone.
 
 The tarball is ~250 MB. To build from one you already have:
 
@@ -105,9 +140,8 @@ Reference: Bun's `src/standalone_graph/StandaloneModuleGraph.rs`.
   used.
 - The unpacked tree shares `~/.claude` with any other install. If a newer release migrates state,
   an older fallback may not survive it.
-- Untested: whether some version between 2.1.113 and 2.1.293 predates the `Bun.ant` renderer and
-  would therefore have a working TUI on stock Bun. 2.1.113 was the first Bun-compiled release; the
-  native cell renderer landed at some unknown point after it.
+- `claude-repl` has no interactive permission prompt, so tool-heavy work needs an explicit
+  `--permission-mode`.
 
 ## Why not patch the frozen 2.1.112 build instead
 
@@ -130,7 +164,8 @@ drive a model whose entry defaults to an effort level.
 
 - `bunx.js` — Bun standalone-graph parser and extractor
 - `rewrite.js` — repoints embedded `$bunfs` paths at a real directory
-- `install.sh` — download, unpack, rewrite, install the `claude-bun` wrapper
+- `claude-repl.js` — interactive client over the CLI's stream-json session mode
+- `install.sh` — download, unpack, rewrite, install the `claude-bun` / `claude-repl` wrappers
 
 > Unpacks a local copy of Anthropic's Claude Code for personal use on an otherwise-unsupported
 > platform. Not affiliated with Anthropic.

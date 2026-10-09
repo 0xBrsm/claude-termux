@@ -9,7 +9,9 @@ set -euo pipefail
 
 VERSION="${1:-}"
 PREFIX="$HOME/.local/share/claude-code-bun"
-BIN="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}/bin/claude-bun"
+BINDIR="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}/bin"
+BIN="$BINDIR/claude-bun"
+REPL="$BINDIR/claude-repl"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -40,5 +42,14 @@ exec bun "$DEST/cli.mjs" "\$@"
 EOF
 chmod +x "$BIN"
 
-echo "==> installed: $BIN"
+# Interactive front-end: the real TUI can't run on stock Bun, so drive the stream-json
+# session mode instead.
+cp "$HERE/claude-repl.js" "$DEST/claude-repl.js"
+cat > "$REPL" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+exec node "$DEST/claude-repl.js" "\$@"
+EOF
+chmod +x "$REPL"
+
+echo "==> installed: $BIN, $REPL"
 "$BIN" --version
