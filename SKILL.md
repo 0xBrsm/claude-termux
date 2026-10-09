@@ -1,11 +1,19 @@
 ---
 name: patch-cli-model
-description: Sync the locked Termux Claude Code CLI (v2.1.112, last JS build — Termux is stuck here because 2.1.113+ ship Bun-compiled native binaries with no Android target) to a newer version's model menu. Extracts the model registry + picker from any newer native binary and ports it onto a pristine 2.1.112 copy. Use when a new model/version has shipped and the locked CLI's /model picker or --model flag is out of date.
+description: FALLBACK ONLY — superseded by unpacking the Bun standalone graph and running the current release under Termux's native bun (see install.sh/bunx.js). Syncs the locked Termux Claude Code CLI (v2.1.112, last JS build) to a newer version's model menu by extracting the model registry + picker from a newer native binary and porting them onto a pristine 2.1.112 copy. Use only when running the current version is not an option, e.g. no native bun available.
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Patch CLI Model
+
+> **Superseded.** Termux is no longer stuck on 2.1.112. `pkg install bun` provides a native
+> aarch64-android Bun, and a `--compile` payload keeps full source text for every module (the
+> embedded JSC bytecode is only a startup optimization), so the current release can be unpacked and
+> run directly — see `install.sh` / `bunx.js` in this repo. Prefer that: it runs the real version
+> instead of grafting model entries onto an old one, and it isn't subject to the server-side
+> `claude_code_version_too_old` gate. Use this skill only as a fallback, e.g. if `bun` is
+> unavailable.
 
 Ports a newer Claude Code version's model menu onto the frozen Termux JS build at:
 
